@@ -29,7 +29,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # 여기 원하는 코인으로 수정하세요 (바이낸스 심볼 표기, 콤마로 구분)
-          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT"
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT"
         run: python rsi_alert.py
 
       - name: Commit updated RSI state

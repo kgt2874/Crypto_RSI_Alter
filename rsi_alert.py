@@ -20,8 +20,16 @@ STATE_FILE = Path("rsi_state.json")
 
 INTERVAL = "1h"
 RSI_PERIOD = 14
-OVERBOUGHT = 70
-OVERSOLD = 30
+
+# 코인별 개별 기준값: {심볼: (과매도 기준, 과매수 기준)}
+# 여기 없는 코인은 아래 DEFAULT 값을 사용함
+SYMBOL_THRESHOLDS = {
+    "BTCUSDT": (17, 87),
+    "ETHUSDT": (17, 85),
+    "BNBUSDT": (10, 72),
+}
+DEFAULT_OVERSOLD = 30
+DEFAULT_OVERBOUGHT = 70
 
 # 환경변수로 주입 (GitHub Actions workflow의 env: 참고)
 SYMBOLS = [s.strip() for s in os.environ.get("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
@@ -68,10 +76,16 @@ def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
 
 
-def zone_of(rsi: float) -> str:
-    if rsi >= OVERBOUGHT:
+def get_thresholds(symbol: str) -> tuple[float, float]:
+    """코인별 (과매도, 과매수) 기준값을 반환. 지정 안 된 코인은 기본값(30/70) 사용."""
+    return SYMBOL_THRESHOLDS.get(symbol, (DEFAULT_OVERSOLD, DEFAULT_OVERBOUGHT))
+
+
+def zone_of(rsi: float, symbol: str) -> str:
+    oversold, overbought = get_thresholds(symbol)
+    if rsi >= overbought:
         return "overbought"
-    if rsi <= OVERSOLD:
+    if rsi <= oversold:
         return "oversold"
     return "neutral"
 
@@ -88,14 +102,15 @@ def main() -> None:
             continue
 
         prev_zone = state.get(symbol, "neutral")
-        zone = zone_of(rsi)
+        zone = zone_of(rsi, symbol)
+        oversold, overbought = get_thresholds(symbol)
 
         # 구간이 "바뀌었고" 새 구간이 과매수/과매도일 때만 알림
         if zone != prev_zone and zone != "neutral":
             if zone == "overbought":
-                msg = f"⚠️ {symbol} 1H RSI(14) = {rsi:.1f}\n과매수 구간(70) 진입"
+                msg = f"⚠️ {symbol} 1H RSI(14) = {rsi:.1f}\n과매수 구간({overbought}) 진입"
             else:
-                msg = f"⚠️ {symbol} 1H RSI(14) = {rsi:.1f}\n과매도 구간(30) 진입"
+                msg = f"⚠️ {symbol} 1H RSI(14) = {rsi:.1f}\n과매도 구간({oversold}) 진입"
             send_telegram(msg)
             print(f"[{symbol}] 알림 전송 완료: RSI={rsi:.1f}, {prev_zone} -> {zone}")
         else:

@@ -12,7 +12,10 @@ from pathlib import Path
 import requests
 import pandas as pd
 
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+# data-api.binance.vision: 바이낸스가 제공하는 "공개 시세 데이터 전용" 주소.
+# api.binance.com은 미국 등 규제 지역 IP(예: GitHub Actions 서버)를 차단(451 에러)하지만,
+# 이 주소는 인증이 필요없는 공개 시세 조회용이라 지역 제한 없이 열려 있음.
+BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 STATE_FILE = Path("rsi_state.json")
 
 INTERVAL = "1h"

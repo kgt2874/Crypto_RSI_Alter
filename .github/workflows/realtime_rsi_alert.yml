@@ -1,0 +1,53 @@
+name: Realtime RSI Alert (WebSocket)
+
+on:
+  schedule:
+    # 00:00, 06:00, 12:00, 18:00 UTC 마다 새로 시작 (하루 4번, Job당 최대 6시간 제한 대응)
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      test_duration_sec:
+        description: '테스트용 실행 시간(초). 비워두면 기본 5시간40분 동안 실행됩니다. 짧은 테스트 시 예: 60'
+        required: false
+        default: ''
+
+concurrency:
+  group: realtime-rsi
+  cancel-in-progress: false
+
+jobs:
+  rsi-stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # 5시간50분 하드 타임아웃 (스크립트 자체 종료가 우선이며 이건 안전장치)
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run realtime RSI websocket listener
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 여기 원하는 코인으로 수정하세요 (바이낸스 심볼 표기, 콤마로 구분)
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT"
+          MAX_RUNTIME_SEC: ${{ github.event.inputs.test_duration_sec != '' && github.event.inputs.test_duration_sec || '20400' }}
+        run: python realtime_rsi_alert.py
+
+      - name: Commit updated RSI state
+        if: always()
+        run: |
+          git config user.name "rsi-alert-bot"
+          git config user.email "rsi-alert-bot@users.noreply.github.com"
+          git add rsi_state.json
+          git diff --staged --quiet || git commit -m "chore: update rsi state (realtime run)"
+          git push

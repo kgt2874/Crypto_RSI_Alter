@@ -4,6 +4,9 @@
 - GitHub Actions에서 6시간마다 새로 시작되며, 매 실행은 최대 약 5시간 40분 동안
   웹소켓에 연결된 채로 실시간 체결가를 받아 RSI를 즉시 재계산함 (초 단위 반응)
 - RSI가 코인별 기준값을 "새로 돌파"할 때만 알림 (쿨다운으로 스팸 방지)
+- 코인마다 Short/Long 조건 방향(이상/이하)을 독립적으로 설정 가능
+  (예: 추세추종형 - Short는 낮은RSI, Long은 높은RSI / 역추세형 - 그 반대도 가능)
+- 스팟(spot)과 선물(futures) 마켓을 동시에 지원 (QQQUSDT 같은 선물 전용 심볼 대응)
 - 반드시 Public 저장소에서 사용할 것 (Private 무료 실행시간으로는 하루도 못 버팀)
 """
 
@@ -16,8 +19,6 @@ from pathlib import Path
 import requests
 import websockets
 
-REST_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
-WS_BASE_URL = "wss://data-stream.binance.vision/stream"
 STATE_FILE = Path("rsi_state.json")
 
 INTERVAL = "1h"
@@ -26,27 +27,50 @@ HISTORY_SIZE = 200
 ALERT_COOLDOWN_SEC = 180  # 같은 코인이 같은 구간을 반복 돌파해도 이 시간(초) 내엔 재알림 안 함
 MAX_RUNTIME_SEC = int(os.environ.get("MAX_RUNTIME_SEC", 5 * 3600 + 40 * 60))  # 기본 5시간40분
 
-SYMBOL_THRESHOLDS = {
-    "BTCUSDT": (17, 87),
-    "ETHUSDT": (17, 85),
-    "BNBUSDT": (10, 72),
+# 마켓별 접속 주소 (스팟은 지역차단 우회용 공개미러, 선물은 공식 주소)
+MARKET_ENDPOINTS = {
+    "spot": {
+        "rest": "https://data-api.binance.vision/api/v3/klines",
+        "ws": "wss://data-stream.binance.vision/stream",
+    },
+    "futures": {
+        "rest": "https://fapi.binance.com/fapi/v1/klines",
+        "ws": "wss://fstream.binance.com/stream",
+    },
 }
-DEFAULT_OVERSOLD = 30
-DEFAULT_OVERBOUGHT = 70
+
+# 코인별 설정: market(spot/futures), short 조건(기준값, 방향), long 조건(기준값, 방향)
+# 방향은 ">=" (이상) 또는 "<=" (이하)
+SYMBOL_CONFIG = {
+    "BTCUSDT": {"market": "spot", "short": (17, "<="), "long": (70, ">=")},
+    "ETHUSDT": {"market": "spot", "short": (25.5, "<="), "long": (70.5, ">=")},
+    "BNBUSDT": {"market": "spot", "short": (9, "<="), "long": (83, ">=")},
+    "SOLUSDT": {"market": "spot", "short": (14, "<="), "long": (86.5, ">=")},
+    "XRPUSDT": {"market": "spot", "short": (27, "<="), "long": (93.5, ">=")},
+    # QQQ는 역추세형: RSI가 높으면(과매수) Short, 낮으면(과매도) Long
+    "QQQUSDT": {"market": "futures", "short": (89, ">="), "long": (29.5, "<=")},
+}
+DEFAULT_CONFIG = {"market": "spot", "short": (30, "<="), "long": (70, ">=")}
 
 SYMBOLS = [s.strip().upper() for s in os.environ.get("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 
-def get_thresholds(symbol: str):
-    return SYMBOL_THRESHOLDS.get(symbol, (DEFAULT_OVERSOLD, DEFAULT_OVERBOUGHT))
+def get_config(symbol: str) -> dict:
+    return SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
+
+
+def _compare(value: float, threshold: float, op: str) -> bool:
+    return value >= threshold if op == ">=" else value <= threshold
 
 
 def fetch_history(symbol: str, limit: int = HISTORY_SIZE):
     """시작 시점에 과거 종가를 REST로 한 번 채워둠 (RSI 계산 기준선 확보)."""
+    market = get_config(symbol)["market"]
+    rest_url = MARKET_ENDPOINTS[market]["rest"]
     params = {"symbol": symbol, "interval": INTERVAL, "limit": limit}
-    resp = requests.get(REST_KLINES_URL, params=params, timeout=10)
+    resp = requests.get(rest_url, params=params, timeout=10)
     resp.raise_for_status()
     data = resp.json()
     closed = [float(c[4]) for c in data[:-1]]  # 마지막 하나는 진행 중인 캔들이라 제외
@@ -93,12 +117,18 @@ def save_state(state: dict) -> None:
 
 
 def zone_of(rsi: float, symbol: str) -> str:
-    oversold, overbought = get_thresholds(symbol)
-    if rsi >= overbought:
-        return "overbought"
-    if rsi <= oversold:
-        return "oversold"
+    cfg = get_config(symbol)
+    short_val, short_op = cfg["short"]
+    long_val, long_op = cfg["long"]
+    if _compare(rsi, short_val, short_op):
+        return "short"
+    if _compare(rsi, long_val, long_op):
+        return "long"
     return "neutral"
+
+
+def _op_label(op: str) -> str:
+    return "이상" if op == ">=" else "이하"
 
 
 class SymbolTracker:
@@ -126,11 +156,13 @@ class SymbolTracker:
 
         if new_zone != self.zone and new_zone != "neutral":
             if now - self.last_alert_ts >= ALERT_COOLDOWN_SEC:
-                oversold, overbought = get_thresholds(self.symbol)
-                if new_zone == "overbought":
-                    msg = f"⚡ {self.symbol} 1H RSI(14) = {rsi:.1f}\n과매수 구간({overbought}) 실시간 돌파"
+                cfg = get_config(self.symbol)
+                if new_zone == "long":
+                    val, op = cfg["long"]
+                    msg = f"⚡ {self.symbol} 1H RSI(14) = {rsi:.1f}\nLong 신호 (RSI {val} {_op_label(op)}) 실시간 돌파"
                 else:
-                    msg = f"⚡ {self.symbol} 1H RSI(14) = {rsi:.1f}\n과매도 구간({oversold}) 실시간 돌파"
+                    val, op = cfg["short"]
+                    msg = f"⚡ {self.symbol} 1H RSI(14) = {rsi:.1f}\nShort 신호 (RSI {val} {_op_label(op)}) 실시간 돌파"
                 send_telegram(msg)
                 self.last_alert_ts = now
                 print(f"[{self.symbol}] 알림 전송: RSI={rsi:.1f}, {self.zone} -> {new_zone}")
@@ -139,29 +171,22 @@ class SymbolTracker:
         return rsi
 
 
-async def run() -> None:
-    state = load_state()
-    trackers: dict[str, SymbolTracker] = {}
+async def market_loop(market: str, symbols: list, trackers: dict, start_time: float):
+    """하나의 마켓(spot 또는 futures)에 대해 웹소켓 하나로 여러 심볼을 동시에 수신."""
+    if not symbols:
+        return
 
-    print("초기 히스토리 로딩 중...")
-    for symbol in SYMBOLS:
-        closed, current = fetch_history(symbol)
-        prev_zone = state.get(symbol, "neutral")
-        trackers[symbol] = SymbolTracker(symbol, closed, current, prev_zone)
-        rsi = trackers[symbol].compute_rsi()
-        print(f"[{symbol}] 초기 RSI={rsi:.1f}, zone={prev_zone}")
+    ws_base = MARKET_ENDPOINTS[market]["ws"]
+    stream_names = "/".join(f"{s.lower()}@kline_{INTERVAL}" for s in symbols)
+    ws_url = f"{ws_base}?streams={stream_names}"
 
-    stream_names = "/".join(f"{s.lower()}@kline_{INTERVAL}" for s in SYMBOLS)
-    ws_url = f"{WS_BASE_URL}?streams={stream_names}"
+    last_save = time.time()
+    print(f"[{market}] 웹소켓 연결 시작 ({', '.join(symbols)})")
 
-    start_time = time.time()
-    last_save = start_time
-
-    print(f"웹소켓 연결 시작 (최대 {MAX_RUNTIME_SEC}초 실행 예정)")
     while time.time() - start_time < MAX_RUNTIME_SEC:
         try:
             async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
-                print("웹소켓 연결 성공, 실시간 수신 시작")
+                print(f"[{market}] 웹소켓 연결 성공, 실시간 수신 시작")
                 while time.time() - start_time < MAX_RUNTIME_SEC:
                     raw = await asyncio.wait_for(ws.recv(), timeout=60)
                     payload = json.loads(raw)
@@ -182,9 +207,42 @@ async def run() -> None:
                         last_save = time.time()
 
         except (websockets.ConnectionClosed, asyncio.TimeoutError, OSError) as e:
-            print(f"웹소켓 연결 끊김, 5초 후 재연결 시도: {e}")
+            print(f"[{market}] 웹소켓 연결 끊김, 5초 후 재연결 시도: {e}")
             await asyncio.sleep(5)
             continue
+
+
+async def run() -> None:
+    state = load_state()
+    trackers = {}
+    spot_symbols, futures_symbols = [], []
+
+    print("초기 히스토리 로딩 중...")
+    for symbol in SYMBOLS:
+        cfg = get_config(symbol)
+        try:
+            closed, current = fetch_history(symbol)
+        except Exception as e:
+            print(f"[{symbol}] 초기 데이터 조회 실패, 이번 실행에서 제외: {e}")
+            continue
+
+        prev_zone = state.get(symbol, "neutral")
+        trackers[symbol] = SymbolTracker(symbol, closed, current, prev_zone)
+        rsi = trackers[symbol].compute_rsi()
+        print(f"[{symbol}] ({cfg['market']}) 초기 RSI={rsi:.1f}, zone={prev_zone}")
+
+        if cfg["market"] == "futures":
+            futures_symbols.append(symbol)
+        else:
+            spot_symbols.append(symbol)
+
+    start_time = time.time()
+    print(f"실시간 감시 시작 (최대 {MAX_RUNTIME_SEC}초 실행 예정)")
+
+    await asyncio.gather(
+        market_loop("spot", spot_symbols, trackers, start_time),
+        market_loop("futures", futures_symbols, trackers, start_time),
+    )
 
     print("실행 시간 한도 도달. 상태 저장 후 정상 종료 (다음 스케줄에서 자동 재시작됨)")
     save_state({s: t.zone for s, t in trackers.items()})

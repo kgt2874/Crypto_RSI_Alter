@@ -47,8 +47,6 @@ SYMBOL_CONFIG = {
     "BNBUSDT": {"market": "spot", "short": (9, "<="), "long": (83, ">=")},
     "SOLUSDT": {"market": "spot", "short": (14, "<="), "long": (86.5, ">=")},
     "XRPUSDT": {"market": "spot", "short": (27, "<="), "long": (93.5, ">=")},
-    # QQQ는 역추세형: RSI가 높으면(과매수) Short, 낮으면(과매도) Long
-    "QQQUSDT": {"market": "futures", "short": (89, ">="), "long": (29.5, "<=")},
 }
 DEFAULT_CONFIG = {"market": "spot", "short": (30, "<="), "long": (70, ">=")}
 

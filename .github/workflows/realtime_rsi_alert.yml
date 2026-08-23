@@ -39,7 +39,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # 여기 원하는 코인으로 수정하세요 (바이낸스 심볼 표기, 콤마로 구분)
-          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,QQQUSDT"
+          SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT"
           MAX_RUNTIME_SEC: ${{ github.event.inputs.test_duration_sec != '' && github.event.inputs.test_duration_sec || '20400' }}
         run: python realtime_rsi_alert.py
 

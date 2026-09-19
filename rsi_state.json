@@ -1,7 +1,7 @@
 {
-  "BTCUSDT": "long",
+  "BTCUSDT": "neutral",
   "ETHUSDT": "long",
-  "SOLUSDT": "long",
+  "SOLUSDT": "neutral",
   "XRPUSDT": "neutral",
   "BNBUSDT": "neutral"
 }
